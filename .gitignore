@@ -1,0 +1,105 @@
+# =========================
+# PYTHON
+# =========================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# =========================
+# TESTS / COVERAGE
+# =========================
+.coverage
+coverage.xml
+htmlcov/
+.pytest_cache/
+
+# =========================
+# BUILD / DISTRIBUTION
+# =========================
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# =========================
+# VIRTUAL ENVIRONMENTS
+# =========================
+venv/
+env/
+ENV/
+.venv/
+
+# =========================
+# ENV VARIABLES
+# =========================
+.env
+.env.*
+*.env
+
+# =========================
+# DATABASE
+# =========================
+*.db
+*.sqlite3
+
+# =========================
+# MIGRATIONS (opcional)
+# =========================
+# Si quieres versionar migraciones, comenta esto
+alembic/versions/*.pyc
+
+# =========================
+# IDEs / EDITORS
+# =========================
+
+# VSCode
+.vscode/
+
+# PyCharm / IntelliJ
+.idea/
+
+# Sublime
+*.sublime-project
+*.sublime-workspace
+
+# =========================
+# OS FILES
+# =========================
+.DS_Store
+Thumbs.db
+
+# =========================
+# LOGS
+# =========================
+*.log
+
+# =========================
+# FASTAPI / UVICORN
+# =========================
+*.pid
+*.reload
+
+# =========================
+# CACHE
+# =========================
+.cache/
+
+# =========================
+# SECRET FILES
+# =========================
+secrets.json
+credentials.json
+
+# =========================
+# OPTIONAL (DATA / ML FUTURE)
+# =========================
+data/
+models/
+notebooks/
+
+# =========================
+# TEMP FILES
+# =========================
+*.tmp
+*.bak

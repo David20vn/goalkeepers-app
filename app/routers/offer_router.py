@@ -25,10 +25,7 @@ router = APIRouter(tags=["Offers"])
         "se ejecuta en la capa de servicio."
     ),
 )
-def create_offer(
-    payload: OfferCreate,
-    current_user: Any = Depends(get_current_user),
-):
+def create_offer( payload: OfferCreate, current_user: Any = Depends(get_current_user), ):
     """
     Crea una nueva oferta.
     Puede ser iniciada por un jugador o por un arquero, según las reglas del sistema.
@@ -51,9 +48,7 @@ def create_offer(
     summary="Listar ofertas enviadas",
     description="Devuelve las ofertas que el usuario autenticado ha enviado.",
 )
-def list_sent_offers(
-    current_user: Any = Depends(get_current_user),
-):
+def list_sent_offers( current_user: Any = Depends(get_current_user), ):
     """
     Retorna las ofertas que el usuario autenticado ha enviado.
     """
@@ -69,9 +64,7 @@ def list_sent_offers(
     summary="Listar ofertas recibidas",
     description="Devuelve las ofertas que el usuario autenticado ha recibido.",
 )
-def list_received_offers(
-    current_user: Any = Depends(get_current_user),
-):
+def list_received_offers( current_user: Any = Depends(get_current_user), ):
     """
     Retorna las ofertas que el usuario autenticado ha recibido.
     """
@@ -87,10 +80,7 @@ def list_received_offers(
     summary="Obtener una oferta por ID",
     description="Devuelve el detalle de una oferta específica.",
 )
-def get_offer_by_id(
-    offer_id: int,
-    current_user: Any = Depends(get_current_user),
-):
+def get_offer_by_id( offer_id: int, current_user: Any = Depends(get_current_user), ):
     """
     Devuelve la información de una oferta específica.
     La capa de servicio debe validar que el usuario tenga permiso para verla.
@@ -114,10 +104,7 @@ def get_offer_by_id(
         "La transacción debe evitar doble asignación."
     ),
 )
-def accept_offer(
-    offer_id: int,
-    current_user: Any = Depends(get_current_user),
-):
+def accept_offer( offer_id: int, current_user: Any = Depends(get_current_user), ):
     """
     Acepta una oferta.
     La capa de servicio debe ejecutar la transacción completa:
@@ -141,10 +128,7 @@ def accept_offer(
     summary="Rechazar oferta",
     description="Rechaza una oferta recibida por el usuario autenticado.",
 )
-def reject_offer(
-    offer_id: int,
-    current_user: Any = Depends(get_current_user),
-):
+def reject_offer( offer_id: int, current_user: Any = Depends(get_current_user), ):
     """
     Rechaza una oferta.
     """
