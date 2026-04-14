@@ -1,462 +1,312 @@
 # app/services/offer_service.py
 
-from contextlib import contextmanager
-from typing import Any, List, Optional
-
-from sqlalchemy import select, update
-from sqlalchemy.exc import SQLAlchemyError
-from sqlalchemy.orm import Session
+from typing import Any, List
 
 from app.core.database import SessionLocal
-from app.models.offer import Offer
-from app.models.match import Match
-from app.models.goalkeeper_profile import GoalkeeperProfile
-from app.models.user import User
-from app.schemas.offer import OfferCreate, OfferRead, OfferActionResponse
+from app.repositories.offer_repository import OfferRepository
+from app.repositories.match_repository import MatchRepository
+from app.repositories.goalkeeper_repository import GoalkeeperRepository
+from app.repositories.user_repository import UserRepository
 
 
 class OfferService:
     """
-    Servicio de ofertas.
+    Lógica de negocio del módulo de ofertas.
 
-    Supone que la tabla 'ofertas' tiene, al menos, estos campos:
-    - id_oferta
-    - id_partido
-    - id_jugador
-    - id_arquero
-    - id_emisor  -> para saber quién creó la oferta
-    - precio
-    - estado
-    - fecha_oferta
-
-    Estados esperados:
-    - pendiente
-    - aceptada
-    - rechazada
+    Esta capa no debe ejecutar SQL directo.
+    Solo coordina validaciones, reglas de negocio y llamadas al repositorio.
     """
 
-    # =========================
+    # -----------------------------
     # Helpers internos
-    # =========================
-
+    # -----------------------------
     @staticmethod
-    @contextmanager
-    def _session_scope():
-        db: Session = SessionLocal()
-        try:
-            yield db
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+    def _get_attr(obj: Any, attr_name: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            return obj.get(attr_name, default)
+        return getattr(obj, attr_name, default)
 
-    @staticmethod
-    def _get_attr(obj: Any, *names: str, default: Any = None) -> Any:
-        """
-        Intenta leer un atributo de un objeto con varios nombres posibles.
-        Útil cuando aún no tienes exactamente iguales los nombres en todos los modelos.
-        """
-        for name in names:
-            if hasattr(obj, name):
-                return getattr(obj, name)
-        return default
-
-    @staticmethod
-    def _current_user_id(current_user: Any) -> int:
-        user_id = OfferService._get_attr(current_user, "id_usuario", "id", "user_id")
+    @classmethod
+    def _get_user_id(cls, current_user: Any) -> int:
+        user_id = cls._get_attr(current_user, "id_usuario", None)
         if user_id is None:
-            raise ValueError("No se pudo obtener el id del usuario autenticado.")
+            user_id = cls._get_attr(current_user, "id", None)
+
+        if user_id is None:
+            raise ValueError("No se pudo identificar el usuario autenticado.")
+
         return int(user_id)
 
-    @staticmethod
-    def _current_user_role(current_user: Any) -> str:
-        role = OfferService._get_attr(
-            current_user,
-            "tipo_usuario",
-            "rol",
-            "role",
-            "user_type",
-        )
+    @classmethod
+    def _get_user_role(cls, current_user: Any) -> str:
+        role = cls._get_attr(current_user, "tipo_usuario", None)
         if role is None:
-            raise ValueError("No se pudo obtener el rol del usuario autenticado.")
-        return str(role).lower()
+            role = cls._get_attr(current_user, "role", None)
+
+        if role is None:
+            raise ValueError("No se pudo determinar el rol del usuario autenticado.")
+
+        return str(role)
 
     @staticmethod
-    def _to_offer_read(offer: Offer) -> OfferRead:
-        # Asume Pydantic v2 con from_attributes=True en OfferRead
-        return OfferRead.model_validate(offer, from_attributes=True)
+    def _validate_role(value: str) -> str:
+        role = value.lower().strip()
+        if role not in ("jugador", "arquero"):
+            raise ValueError("El rol debe ser 'jugador' o 'arquero'.")
+        return role
 
-    @staticmethod
-    def _receiver_user_id(offer: Offer) -> int:
+    # -----------------------------
+    # Crear oferta
+    # -----------------------------
+    @classmethod
+    def create_offer(cls, current_user: Any, payload: Any):
         """
-        Si el emisor fue el jugador, el receptor es el arquero.
-        Si el emisor fue el arquero, el receptor es el jugador.
-        """
-        emisor_id = OfferService._get_attr(offer, "id_emisor")
-        if emisor_id is None:
-            raise ValueError("La oferta no tiene id_emisor. Agrega ese campo al modelo/tabla.")
-
-        id_jugador = OfferService._get_attr(offer, "id_jugador")
-        id_arquero = OfferService._get_attr(offer, "id_arquero")
-
-        if emisor_id == id_jugador:
-            return int(id_arquero)
-        return int(id_jugador)
-
-    @staticmethod
-    def _ensure_user_can_view_offer(current_user: Any, offer: Offer) -> None:
-        user_id = OfferService._current_user_id(current_user)
-        id_jugador = OfferService._get_attr(offer, "id_jugador")
-        id_arquero = OfferService._get_attr(offer, "id_arquero")
-        id_emisor = OfferService._get_attr(offer, "id_emisor")
-
-        if user_id not in {int(id_jugador), int(id_arquero), int(id_emisor)}:
-            raise PermissionError("No tienes permisos para ver esta oferta.")
-
-    @staticmethod
-    def _ensure_only_receiver_can_act(current_user: Any, offer: Offer) -> None:
-        user_id = OfferService._current_user_id(current_user)
-        receiver_id = OfferService._receiver_user_id(offer)
-
-        if user_id != receiver_id:
-            raise PermissionError("Solo el receptor de la oferta puede aceptarla o rechazarla.")
-
-    # =========================
-    # Creación de oferta
-    # =========================
-
-    @staticmethod
-    def create_offer(current_user: Any, payload: OfferCreate) -> OfferRead:
-        """
-        Crea una oferta.
-        Soporta dos escenarios:
-        1) Jugador ofrece a un arquero para uno de sus partidos.
-        2) Arquero propone su servicio sobre un partido publicado.
-
-        Reglas:
-        - Si el usuario autenticado es jugador, debe indicar id_partido e id_arquero.
-        - Si el usuario autenticado es arquero, debe indicar al menos id_partido.
-        - El precio siempre sale del perfil del arquero.
-        - El partido debe seguir sin arquero.
-        - No se permiten ofertas duplicadas activas sobre la misma pareja (partido + arquero).
-        """
-        user_id = OfferService._current_user_id(current_user)
-        role = OfferService._current_user_role(current_user)
-
-        id_partido = OfferService._get_attr(payload, "id_partido")
-        id_arquero_payload = OfferService._get_attr(payload, "id_arquero", default=None)
-
-        if id_partido is None:
-            raise ValueError("Debes indicar id_partido.")
-
-        with OfferService._session_scope() as db:
-            try:
-                # Bloqueamos el partido para leerlo de forma segura
-                match = (
-                    db.execute(
-                        select(Match).where(Match.id_partido == id_partido).with_for_update()
-                    )
-                    .scalar_one_or_none()
-                )
-
-                if match is None:
-                    raise LookupError("El partido no existe.")
-
-                estado_partido = OfferService._get_attr(match, "estado")
-                id_jugador_partido = OfferService._get_attr(match, "id_jugador")
-
-                if estado_partido != "sin_arquero":
-                    raise ValueError("No se pueden crear ofertas sobre un partido ya asignado.")
-
-                # Determinar quién es el arquero objetivo y quién es el jugador del partido
-                if role == "jugador":
-                    if id_arquero_payload is None:
-                        raise ValueError("Como jugador debes indicar id_arquero.")
-
-                    if int(id_jugador_partido) != user_id:
-                        raise PermissionError("No puedes hacer ofertas sobre partidos que no te pertenecen.")
-
-                    id_arquero = int(id_arquero_payload)
-                    id_jugador = user_id
-                    id_emisor = user_id
-
-                elif role == "arquero":
-                    # El arquero propone su perfil sobre un partido abierto
-                    id_arquero = user_id
-                    id_jugador = int(id_jugador_partido)
-                    id_emisor = user_id
-
-                    if id_arquero_payload is not None and int(id_arquero_payload) != user_id:
-                        raise PermissionError("El arquero autenticado no coincide con id_arquero enviado.")
-
-                else:
-                    raise PermissionError("Tu tipo de usuario no está autorizado para crear ofertas.")
-
-                # Validar que el arquero exista y tenga perfil
-                goalkeeper_profile = (
-                    db.execute(
-                        select(GoalkeeperProfile).where(
-                            GoalkeeperProfile.id_usuario == id_arquero
-                        )
-                    )
-                    .scalar_one_or_none()
-                )
-
-                if goalkeeper_profile is None:
-                    raise LookupError("El arquero no tiene perfil registrado.")
-
-                precio = OfferService._get_attr(goalkeeper_profile, "precio")
-                if precio is None:
-                    raise ValueError("El perfil del arquero no tiene precio definido.")
-
-                # Evitar duplicados activos para la misma pareja partido + arquero
-                existing_offer = (
-                    db.execute(
-                        select(Offer).where(
-                            Offer.id_partido == id_partido,
-                            Offer.id_arquero == id_arquero,
-                            Offer.estado.in_(["pendiente", "aceptada"]),
-                        )
-                    )
-                    .scalar_one_or_none()
-                )
-
-                if existing_offer is not None:
-                    raise ValueError("Ya existe una oferta activa para este partido y este arquero.")
-
-                new_offer = Offer(
-                    id_partido=id_partido,
-                    id_jugador=id_jugador,
-                    id_arquero=id_arquero,
-                    id_emisor=id_emisor,
-                    precio=precio,
-                    estado="pendiente",
-                )
-
-                db.add(new_offer)
-                db.flush()
-                db.refresh(new_offer)
-
-                return OfferService._to_offer_read(new_offer)
-
-            except (LookupError, ValueError, PermissionError):
-                raise
-            except SQLAlchemyError as exc:
-                raise RuntimeError(f"Error de base de datos al crear la oferta: {exc}") from exc
-
-    # =========================
-    # Listados
-    # =========================
-
-    @staticmethod
-    def list_sent_offers(current_user: Any) -> List[OfferRead]:
-        """
-        Devuelve las ofertas enviadas por el usuario autenticado.
-        Requiere el campo id_emisor en la tabla of ofertas.
-        """
-        user_id = OfferService._current_user_id(current_user)
-
-        with OfferService._session_scope() as db:
-            try:
-                offers = (
-                    db.execute(
-                        select(Offer)
-                        .where(Offer.id_emisor == user_id)
-                        .order_by(Offer.fecha_oferta.desc())
-                    )
-                    .scalars()
-                    .all()
-                )
-                return [OfferService._to_offer_read(offer) for offer in offers]
-            except SQLAlchemyError as exc:
-                raise RuntimeError(f"Error al listar ofertas enviadas: {exc}") from exc
-
-    @staticmethod
-    def list_received_offers(current_user: Any) -> List[OfferRead]:
-        """
-        Devuelve las ofertas recibidas por el usuario autenticado.
-        Se consideran recibidas las ofertas donde el usuario participa,
-        pero no fue el emisor.
-        """
-        user_id = OfferService._current_user_id(current_user)
-
-        with OfferService._session_scope() as db:
-            try:
-                offers = (
-                    db.execute(
-                        select(Offer)
-                        .where(
-                            ((Offer.id_jugador == user_id) | (Offer.id_arquero == user_id)),
-                            Offer.id_emisor != user_id,
-                        )
-                        .order_by(Offer.fecha_oferta.desc())
-                    )
-                    .scalars()
-                    .all()
-                )
-                return [OfferService._to_offer_read(offer) for offer in offers]
-            except SQLAlchemyError as exc:
-                raise RuntimeError(f"Error al listar ofertas recibidas: {exc}") from exc
-
-    # =========================
-    # Consulta puntual
-    # =========================
-
-    @staticmethod
-    def get_offer_by_id(current_user: Any, offer_id: int) -> OfferRead:
-        """
-        Devuelve una oferta por ID solo si el usuario autenticado tiene permiso.
-        """
-        with OfferService._session_scope() as db:
-            try:
-                offer = (
-                    db.execute(
-                        select(Offer).where(Offer.id_oferta == offer_id)
-                    )
-                    .scalar_one_or_none()
-                )
-
-                if offer is None:
-                    raise LookupError("La oferta no existe.")
-
-                OfferService._ensure_user_can_view_offer(current_user, offer)
-                return OfferService._to_offer_read(offer)
-
-            except (LookupError, PermissionError):
-                raise
-            except SQLAlchemyError as exc:
-                raise RuntimeError(f"Error al consultar la oferta: {exc}") from exc
-
-    # =========================
-    # Aceptar / rechazar
-    # =========================
-
-    @staticmethod
-    def accept_offer(current_user: Any, offer_id: int) -> OfferActionResponse:
-        """
-        Acepta una oferta usando una transacción atómica.
+        Crea una oferta nueva.
 
         Flujo:
-        1. Bloquear la oferta.
-        2. Validar que esté pendiente.
-        3. Validar que el usuario autenticado sea el receptor.
-        4. Bloquear el partido.
-        5. Verificar que siga sin arquero.
-        6. Asignar arquero al partido.
-        7. Marcar la oferta como aceptada.
-        8. Rechazar las demás ofertas pendientes del mismo partido.
+        - Se identifica quién envía la oferta.
+        - Se valida el partido.
+        - Se valida el receptor.
+        - Se calcula el precio fijo según el arquero.
+        - Se crea la oferta en estado pendiente.
         """
-        with OfferService._session_scope() as db:
+        sender_user_id = cls._get_user_id(current_user)
+        sender_role = cls._validate_role(cls._get_user_role(current_user))
+
+        match_id = cls._get_attr(payload, "id_partido", None)
+        target_user_id = cls._get_attr(payload, "target_user_id", None)
+
+        if match_id is None:
+            raise ValueError("El campo 'id_partido' es obligatorio.")
+
+        if target_user_id is None:
+            raise ValueError("El campo 'target_user_id' es obligatorio.")
+
+        target_user_id = int(target_user_id)
+        match_id = int(match_id)
+
+        with SessionLocal() as db:
             try:
                 with db.begin():
-                    offer = (
-                        db.execute(
-                            select(Offer)
-                            .where(Offer.id_oferta == offer_id)
-                            .with_for_update()
-                        )
-                        .scalar_one_or_none()
-                    )
+                    match = MatchRepository.get_by_id_for_update(db, match_id)
+                    if not match:
+                        raise LookupError("El partido no existe.")
 
-                    if offer is None:
+                    if match.estado != "sin_arquero":
+                        raise ValueError("No se pueden crear ofertas sobre un partido ya asignado.")
+
+                    target_user = UserRepository.get_by_id(db, target_user_id)
+                    if not target_user:
+                        raise LookupError("El usuario destino no existe.")
+
+                    target_role = cls._validate_role(cls._get_attr(target_user, "tipo_usuario", ""))
+
+                    if sender_user_id == target_user_id:
+                        raise ValueError("No puedes enviarte una oferta a ti mismo.")
+
+                    # Regla: jugador -> arquero
+                    # Regla: arquero -> jugador
+                    if sender_role == "jugador":
+                        if cls._validate_role(target_role) != "arquero":
+                            raise ValueError("Un jugador solo puede enviar ofertas a un arquero.")
+
+                        if int(match.id_jugador) != sender_user_id:
+                            raise PermissionError("Solo puedes ofertar sobre partidos que te pertenecen.")
+
+                        goalkeeper_profile = GoalkeeperRepository.get_profile_by_user_id(db, target_user_id)
+                        if not goalkeeper_profile:
+                            raise LookupError("El arquero no tiene un perfil público activo.")
+
+                        price = float(goalkeeper_profile.precio)
+                        goalkeeper_id = target_user_id
+                        player_id = sender_user_id
+
+                    elif sender_role == "arquero":
+                        if cls._validate_role(target_role) != "jugador":
+                            raise ValueError("Un arquero solo puede enviar ofertas a un jugador.")
+
+                        goalkeeper_profile = GoalkeeperRepository.get_profile_by_user_id(db, sender_user_id)
+                        if not goalkeeper_profile:
+                            raise LookupError("No tienes un perfil de arquero activo.")
+
+                        price = float(goalkeeper_profile.precio)
+                        goalkeeper_id = sender_user_id
+                        player_id = target_user_id
+
+                    else:
+                        raise PermissionError("Rol no autorizado para crear ofertas.")
+
+                    existing_offer = OfferRepository.get_pending_offer_between(
+                        db=db,
+                        id_partido=match_id,
+                        id_jugador=player_id,
+                        id_arquero=goalkeeper_id,
+                    )
+                    if existing_offer:
+                        raise ValueError("Ya existe una oferta pendiente entre estos usuarios para este partido.")
+
+                    offer_data = {
+                        "id_partido": match_id,
+                        "id_jugador": player_id,
+                        "id_arquero": goalkeeper_id,
+                        "precio": price,
+                        "estado": "pendiente",
+                        "created_by_user_id": sender_user_id,
+                        "created_by_role": sender_role,
+                        "target_user_id": target_user_id,
+                    }
+
+                    offer = OfferRepository.create(db, offer_data)
+                    db.flush()
+                    return offer
+
+            except Exception:
+                db.rollback()
+                raise
+
+    # -----------------------------
+    # Listar ofertas enviadas
+    # -----------------------------
+    @classmethod
+    def list_sent_offers(cls, current_user: Any) -> List[Any]:
+        user_id = cls._get_user_id(current_user)
+
+        with SessionLocal() as db:
+            offers = OfferRepository.list_sent_by_user(db, user_id)
+            return offers
+
+    # -----------------------------
+    # Listar ofertas recibidas
+    # -----------------------------
+    @classmethod
+    def list_received_offers(cls, current_user: Any) -> List[Any]:
+        user_id = cls._get_user_id(current_user)
+
+        with SessionLocal() as db:
+            offers = OfferRepository.list_received_by_user(db, user_id)
+            return offers
+
+    # -----------------------------
+    # Obtener una oferta por ID
+    # -----------------------------
+    @classmethod
+    def get_offer_by_id(cls, current_user: Any, offer_id: int):
+        user_id = cls._get_user_id(current_user)
+
+        with SessionLocal() as db:
+            offer = OfferRepository.get_by_id(db, offer_id)
+            if not offer:
+                raise LookupError("La oferta no existe.")
+
+            # Solo pueden verla el creador, el receptor o un administrador si existiera.
+            if user_id not in (
+                int(offer.created_by_user_id),
+                int(offer.target_user_id),
+            ):
+                raise PermissionError("No tienes permiso para ver esta oferta.")
+
+            return offer
+
+    # -----------------------------
+    # Aceptar oferta
+    # -----------------------------
+    @classmethod
+    def accept_offer(cls, current_user: Any, offer_id: int):
+        """
+        Acepta una oferta y asigna el arquero al partido en una sola transacción.
+
+        Reglas:
+        - Solo el receptor puede aceptar.
+        - El partido debe seguir sin arquero.
+        - La oferta debe estar pendiente.
+        - Se bloquea el partido para evitar doble asignación.
+        """
+        user_id = cls._get_user_id(current_user)
+
+        with SessionLocal() as db:
+            try:
+                with db.begin():
+                    offer = OfferRepository.get_by_id_for_update(db, offer_id)
+                    if not offer:
                         raise LookupError("La oferta no existe.")
 
-                    OfferService._ensure_only_receiver_can_act(current_user, offer)
-
-                    estado_oferta = OfferService._get_attr(offer, "estado")
-                    if estado_oferta != "pendiente":
+                    if offer.estado != "pendiente":
                         raise ValueError("Solo se pueden aceptar ofertas pendientes.")
 
-                    match_id = OfferService._get_attr(offer, "id_partido")
-                    match = (
-                        db.execute(
-                            select(Match)
-                            .where(Match.id_partido == match_id)
-                            .with_for_update()
-                        )
-                        .scalar_one_or_none()
-                    )
+                    if int(offer.target_user_id) != user_id:
+                        raise PermissionError("Solo el receptor de la oferta puede aceptarla.")
 
-                    if match is None:
+                    match = MatchRepository.get_by_id_for_update(db, int(offer.id_partido))
+                    if not match:
                         raise LookupError("El partido asociado a la oferta no existe.")
 
-                    estado_partido = OfferService._get_attr(match, "estado")
-                    if estado_partido != "sin_arquero":
-                        raise ValueError("El partido ya fue asignado y no puede aceptar más ofertas.")
+                    if match.estado != "sin_arquero":
+                        raise ValueError("Este partido ya tiene un arquero asignado.")
 
-                    # Asignar arquero al partido
-                    match.id_arquero_asignado = OfferService._get_attr(offer, "id_arquero")
-                    match.estado = "asignado"
-
-                    # Aceptar esta oferta
-                    offer.estado = "aceptada"
-
-                    # Rechazar automáticamente las demás ofertas del mismo partido
-                    db.execute(
-                        update(Offer)
-                        .where(
-                            Offer.id_partido == match_id,
-                            Offer.id_oferta != offer.id_oferta,
-                            Offer.estado == "pendiente",
-                        )
-                        .values(estado="rechazada")
+                    # Asignación del arquero al partido
+                    MatchRepository.assign_goalkeeper(
+                        db=db,
+                        id_partido=int(match.id_partido),
+                        id_arquero_asignado=int(offer.id_arquero),
                     )
 
-                db.refresh(offer)
+                    # Marcar la oferta aceptada
+                    OfferRepository.mark_accepted(db, int(offer.id_oferta))
 
-                return OfferActionResponse(
-                    success=True,
-                    message="Oferta aceptada y arquero asignado correctamente.",
-                    offer_id=OfferService._get_attr(offer, "id_oferta"),
-                    status=OfferService._get_attr(offer, "estado"),
-                    match_id=OfferService._get_attr(offer, "id_partido"),
-                )
+                    # Rechazar las demás ofertas de ese mismo partido
+                    OfferRepository.reject_other_offers_for_match(
+                        db=db,
+                        id_partido=int(match.id_partido),
+                        accepted_offer_id=int(offer.id_oferta),
+                    )
 
-            except (LookupError, ValueError, PermissionError):
+                    db.flush()
+
+                    return {
+                        "message": "Oferta aceptada y arquero asignado correctamente.",
+                        "offer_id": int(offer.id_oferta),
+                        "match_id": int(match.id_partido),
+                        "status": "accepted",
+                    }
+
+            except Exception:
+                db.rollback()
                 raise
-            except SQLAlchemyError as exc:
-                raise RuntimeError(f"Error de base de datos al aceptar la oferta: {exc}") from exc
 
-    @staticmethod
-    def reject_offer(current_user: Any, offer_id: int) -> OfferActionResponse:
+    # -----------------------------
+    # Rechazar oferta
+    # -----------------------------
+    @classmethod
+    def reject_offer(cls, current_user: Any, offer_id: int):
         """
-        Rechaza una oferta. Solo el receptor puede hacerlo.
+        Rechaza una oferta.
+
+        Solo el receptor puede rechazarla.
         """
-        with OfferService._session_scope() as db:
+        user_id = cls._get_user_id(current_user)
+
+        with SessionLocal() as db:
             try:
                 with db.begin():
-                    offer = (
-                        db.execute(
-                            select(Offer)
-                            .where(Offer.id_oferta == offer_id)
-                            .with_for_update()
-                        )
-                        .scalar_one_or_none()
-                    )
-
-                    if offer is None:
+                    offer = OfferRepository.get_by_id_for_update(db, offer_id)
+                    if not offer:
                         raise LookupError("La oferta no existe.")
 
-                    OfferService._ensure_only_receiver_can_act(current_user, offer)
+                    if int(offer.target_user_id) != user_id:
+                        raise PermissionError("Solo el receptor de la oferta puede rechazarla.")
 
-                    if OfferService._get_attr(offer, "estado") != "pendiente":
+                    if offer.estado != "pendiente":
                         raise ValueError("Solo se pueden rechazar ofertas pendientes.")
 
-                    offer.estado = "rechazada"
+                    OfferRepository.mark_rejected(db, int(offer.id_oferta))
+                    db.flush()
 
-                db.refresh(offer)
+                    return {
+                        "message": "Oferta rechazada correctamente.",
+                        "offer_id": int(offer.id_oferta),
+                        "status": "rejected",
+                    }
 
-                return OfferActionResponse(
-                    success=True,
-                    message="Oferta rechazada correctamente.",
-                    offer_id=OfferService._get_attr(offer, "id_oferta"),
-                    status=OfferService._get_attr(offer, "estado"),
-                    match_id=OfferService._get_attr(offer, "id_partido"),
-                )
-
-            except (LookupError, ValueError, PermissionError):
+            except Exception:
+                db.rollback()
                 raise
-            except SQLAlchemyError as exc:
-                raise RuntimeError(f"Error de base de datos al rechazar la oferta: {exc}") from exc
