@@ -39,7 +39,7 @@ def _map_service_exception(exc: Exception) -> HTTPException:
 
 
 @router.post(
-    "/",
+    "/post",
     response_model=OfferRead,
     status_code=status.HTTP_201_CREATED,
     summary="Crear una oferta",
