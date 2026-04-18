@@ -1,8 +1,10 @@
 # app/services/offer_service.py
 
 from typing import Any, List
+from uuid import UUID
 
 from app.core.database import SessionLocal
+from app.models.enums import OfferStatus, OfferSender
 from app.repositories.offer_repository import OfferRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.goalkeeper_repository import GoalkeeperRepository
@@ -27,7 +29,7 @@ class OfferService:
         return getattr(obj, attr_name, default)
 
     @classmethod
-    def _get_user_id(cls, current_user: Any) -> int:
+    def _get_user_id(cls, current_user: Any) -> UUID:
         user_id = cls._get_attr(current_user, "id_usuario", None)
         if user_id is None:
             user_id = cls._get_attr(current_user, "id", None)
@@ -35,7 +37,7 @@ class OfferService:
         if user_id is None:
             raise ValueError("No se pudo identificar el usuario autenticado.")
 
-        return int(user_id)
+        return UUID(str(user_id))
 
     @classmethod
     def _get_user_role(cls, current_user: Any) -> str:
@@ -46,14 +48,105 @@ class OfferService:
         if role is None:
             raise ValueError("No se pudo determinar el rol del usuario autenticado.")
 
-        return str(role)
+        return cls._normalize_sender_role(str(role))
 
     @staticmethod
-    def _validate_role(value: str) -> str:
+    def _normalize_sender_role(value: str) -> str:
+        """
+        Normaliza roles en español o inglés y los convierte a los valores del enum.
+        """
         role = value.lower().strip()
-        if role not in ("jugador", "arquero"):
-            raise ValueError("El rol debe ser 'jugador' o 'arquero'.")
-        return role
+
+        if role in ("jugador", "player"):
+            return OfferSender.player.value
+
+        if role in ("arquero", "goalkeeper"):
+            return OfferSender.goalkeeper.value
+
+        raise ValueError("El rol debe ser 'jugador'/'player' o 'arquero'/'goalkeeper'.")
+
+    @classmethod
+    def _get_payload_match_id(cls, payload: Any) -> int:
+        match_id = cls._get_attr(payload, "id_partido", None)
+        if match_id is None:
+            match_id = cls._get_attr(payload, "match_id", None)
+
+        if match_id is None:
+            raise ValueError("El campo 'id_partido' es obligatorio.")
+
+        return int(match_id)
+
+    @classmethod
+    def _get_payload_target_user_id(cls, payload: Any) -> UUID:
+        target_user_id = cls._get_attr(payload, "target_user_id", None)
+        if target_user_id is None:
+            target_user_id = cls._get_attr(payload, "id_usuario_destino", None)
+
+        if target_user_id is None:
+            raise ValueError("El campo 'target_user_id' es obligatorio.")
+
+        return UUID(str(target_user_id))
+
+    @classmethod
+    def _get_match_status(cls, match: Any) -> str:
+        status_value = cls._get_attr(match, "estado", None)
+        if status_value is None:
+            status_value = cls._get_attr(match, "status", None)
+
+        if status_value is None:
+            raise ValueError("No se pudo determinar el estado del partido.")
+
+        return str(status_value).lower().strip()
+
+    @classmethod
+    def _get_match_player_id(cls, match: Any) -> UUID:
+        player_id = cls._get_attr(match, "id_jugador", None)
+        if player_id is None:
+            player_id = cls._get_attr(match, "player_id", None)
+
+        if player_id is None:
+            raise ValueError("No se pudo determinar el jugador del partido.")
+
+        return UUID(str(player_id))
+
+    @classmethod
+    def _get_offer_id(cls, offer: Any) -> UUID:
+        offer_id = cls._get_attr(offer, "id_oferta", None)
+        if offer_id is None:
+            offer_id = cls._get_attr(offer, "id", None)
+
+        if offer_id is None:
+            raise ValueError("No se pudo determinar el ID de la oferta.")
+
+        return UUID(str(offer_id))
+
+    @classmethod
+    def _get_offer_sender_role(cls, offer: Any) -> str:
+        sender_role = cls._get_attr(offer, "sender_role", None)
+        if sender_role is None:
+            raise ValueError("La oferta no tiene rol de emisor.")
+
+        return cls._normalize_sender_role(str(sender_role))
+
+    @classmethod
+    def _get_offer_recipient_id(cls, offer: Any) -> UUID:
+        """
+        Determina quién es el receptor de la oferta a partir de quién la envió.
+
+        Si la oferta la envió el jugador, el receptor es el arquero.
+        Si la oferta la envió el arquero, el receptor es el jugador.
+        """
+        sender_role = cls._get_offer_sender_role(offer)
+
+        if sender_role == OfferSender.player.value:
+            recipient_id = cls._get_attr(offer, "goalkeeper_id", None)
+        else:
+            recipient_id = cls._get_attr(offer, "player_id", None)
+
+        if recipient_id is None:
+            raise ValueError("No se pudo determinar el receptor de la oferta.")
+
+        return UUID(str(recipient_id))
 
     # -----------------------------
     # Crear oferta
@@ -71,19 +164,13 @@ class OfferService:
         - Se crea la oferta en estado pendiente.
         """
         sender_user_id = cls._get_user_id(current_user)
-        sender_role = cls._validate_role(cls._get_user_role(current_user))
+        sender_role = cls._get_user_role(current_user)
 
-        match_id = cls._get_attr(payload, "id_partido", None)
-        target_user_id = cls._get_attr(payload, "target_user_id", None)
+        match_id = cls._get_payload_match_id(payload)
+        target_user_id = cls._get_payload_target_user_id(payload)
 
-        if match_id is None:
-            raise ValueError("El campo 'id_partido' es obligatorio.")
-
-        if target_user_id is None:
-            raise ValueError("El campo 'target_user_id' es obligatorio.")
-
-        target_user_id = int(target_user_id)
-        match_id = int(match_id)
+        if sender_user_id == target_user_id:
+            raise ValueError("No puedes enviarte una oferta a ti mismo.")
 
         with SessionLocal() as db:
             try:
@@ -92,25 +179,32 @@ class OfferService:
                     if not match:
                         raise LookupError("El partido no existe.")
 
-                    if match.estado != "sin_arquero":
+                    match_status = cls._get_match_status(match)
+                    if match_status != "sin_arquero":
                         raise ValueError("No se pueden crear ofertas sobre un partido ya asignado.")
 
                     target_user = UserRepository.get_by_id(db, target_user_id)
                     if not target_user:
                         raise LookupError("El usuario destino no existe.")
 
-                    target_role = cls._validate_role(cls._get_attr(target_user, "tipo_usuario", ""))
+                    target_role = cls._normalize_sender_role(
+                        str(
+                            cls._get_attr(
+                                target_user,
+                                "tipo_usuario",
+                                cls._get_attr(target_user, "role", "")
+                            )
+                        )
+                    )
 
-                    if sender_user_id == target_user_id:
-                        raise ValueError("No puedes enviarte una oferta a ti mismo.")
-
-                    # Regla: jugador -> arquero
-                    # Regla: arquero -> jugador
-                    if sender_role == "jugador":
-                        if cls._validate_role(target_role) != "arquero":
+                    # Regla: jugador/player -> arquero/goalkeeper
+                    # Regla: arquero/goalkeeper -> jugador/player
+                    if sender_role == OfferSender.player.value:
+                        if target_role != OfferSender.goalkeeper.value:
                             raise ValueError("Un jugador solo puede enviar ofertas a un arquero.")
 
-                        if int(match.id_jugador) != sender_user_id:
+                        match_player_id = cls._get_match_player_id(match)
+                        if match_player_id != sender_user_id:
                             raise PermissionError("Solo puedes ofertar sobre partidos que te pertenecen.")
 
                         goalkeeper_profile = GoalkeeperRepository.get_profile_by_user_id(db, target_user_id)
@@ -118,11 +212,11 @@ class OfferService:
                             raise LookupError("El arquero no tiene un perfil público activo.")
 
                         price = float(goalkeeper_profile.precio)
-                        goalkeeper_id = target_user_id
                         player_id = sender_user_id
+                        goalkeeper_id = target_user_id
 
-                    elif sender_role == "arquero":
-                        if cls._validate_role(target_role) != "jugador":
+                    elif sender_role == OfferSender.goalkeeper.value:
+                        if target_role != OfferSender.player.value:
                             raise ValueError("Un arquero solo puede enviar ofertas a un jugador.")
 
                         goalkeeper_profile = GoalkeeperRepository.get_profile_by_user_id(db, sender_user_id)
@@ -130,30 +224,29 @@ class OfferService:
                             raise LookupError("No tienes un perfil de arquero activo.")
 
                         price = float(goalkeeper_profile.precio)
-                        goalkeeper_id = sender_user_id
                         player_id = target_user_id
+                        goalkeeper_id = sender_user_id
 
                     else:
                         raise PermissionError("Rol no autorizado para crear ofertas.")
 
                     existing_offer = OfferRepository.get_pending_offer_between(
                         db=db,
-                        id_partido=match_id,
-                        id_jugador=player_id,
-                        id_arquero=goalkeeper_id,
+                        match_id=match_id,
+                        player_id=player_id,
+                        goalkeeper_id=goalkeeper_id,
+                        sender_role=sender_role,
                     )
                     if existing_offer:
                         raise ValueError("Ya existe una oferta pendiente entre estos usuarios para este partido.")
 
                     offer_data = {
-                        "id_partido": match_id,
-                        "id_jugador": player_id,
-                        "id_arquero": goalkeeper_id,
-                        "precio": price,
-                        "estado": "pendiente",
-                        "created_by_user_id": sender_user_id,
-                        "created_by_role": sender_role,
-                        "target_user_id": target_user_id,
+                        "match_id": match_id,
+                        "sender_role": sender_role,
+                        "player_id": player_id,
+                        "goalkeeper_id": goalkeeper_id,
+                        "price": price,
+                        "status": OfferStatus.pending.value,
                     }
 
                     offer = OfferRepository.create(db, offer_data)
@@ -172,8 +265,7 @@ class OfferService:
         user_id = cls._get_user_id(current_user)
 
         with SessionLocal() as db:
-            offers = OfferRepository.list_sent_by_user(db, user_id)
-            return offers
+            return OfferRepository.list_sent_by_user(db, user_id)
 
     # -----------------------------
     # Listar ofertas recibidas
@@ -183,25 +275,24 @@ class OfferService:
         user_id = cls._get_user_id(current_user)
 
         with SessionLocal() as db:
-            offers = OfferRepository.list_received_by_user(db, user_id)
-            return offers
+            return OfferRepository.list_received_by_user(db, user_id)
 
     # -----------------------------
     # Obtener una oferta por ID
     # -----------------------------
     @classmethod
-    def get_offer_by_id(cls, current_user: Any, offer_id: int):
+    def get_offer_by_id(cls, current_user: Any, offer_id: Any):
         user_id = cls._get_user_id(current_user)
 
         with SessionLocal() as db:
-            offer = OfferRepository.get_by_id(db, offer_id)
+            offer = OfferRepository.get_by_id(db, UUID(str(offer_id)))
             if not offer:
                 raise LookupError("La oferta no existe.")
 
-            # Solo pueden verla el creador, el receptor o un administrador si existiera.
+            # Solo pueden verla quienes participan en ella.
             if user_id not in (
-                int(offer.created_by_user_id),
-                int(offer.target_user_id),
+                UUID(str(cls._get_attr(offer, "player_id"))),
+                UUID(str(cls._get_attr(offer, "goalkeeper_id"))),
             ):
                 raise PermissionError("No tienes permiso para ver esta oferta.")
 
@@ -211,7 +302,7 @@ class OfferService:
     # Aceptar oferta
     # -----------------------------
     @classmethod
-    def accept_offer(cls, current_user: Any, offer_id: int):
+    def accept_offer(cls, current_user: Any, offer_id: Any):
         """
         Acepta una oferta y asigna el arquero al partido en una sola transacción.
 
@@ -226,47 +317,53 @@ class OfferService:
         with SessionLocal() as db:
             try:
                 with db.begin():
-                    offer = OfferRepository.get_by_id_for_update(db, offer_id)
+                    offer = OfferRepository.get_by_id_for_update(db, UUID(str(offer_id)))
                     if not offer:
                         raise LookupError("La oferta no existe.")
 
-                    if offer.estado != "pendiente":
+                    offer_status = str(cls._get_attr(offer, "status", "")).lower().strip()
+                    if offer_status != OfferStatus.pending.value:
                         raise ValueError("Solo se pueden aceptar ofertas pendientes.")
 
-                    if int(offer.target_user_id) != user_id:
+                    recipient_id = cls._get_offer_recipient_id(offer)
+                    if recipient_id != user_id:
                         raise PermissionError("Solo el receptor de la oferta puede aceptarla.")
 
-                    match = MatchRepository.get_by_id_for_update(db, int(offer.id_partido))
+                    match_id = int(cls._get_attr(offer, "match_id"))
+                    match = MatchRepository.get_by_id_for_update(db, match_id)
                     if not match:
                         raise LookupError("El partido asociado a la oferta no existe.")
 
-                    if match.estado != "sin_arquero":
+                    match_status = cls._get_match_status(match)
+                    if match_status != "sin_arquero":
                         raise ValueError("Este partido ya tiene un arquero asignado.")
+
+                    goalkeeper_id = UUID(str(cls._get_attr(offer, "goalkeeper_id")))
 
                     # Asignación del arquero al partido
                     MatchRepository.assign_goalkeeper(
                         db=db,
-                        id_partido=int(match.id_partido),
-                        id_arquero_asignado=int(offer.id_arquero),
+                        id_partido=match_id,
+                        id_arquero_asignado=goalkeeper_id,
                     )
 
                     # Marcar la oferta aceptada
-                    OfferRepository.mark_accepted(db, int(offer.id_oferta))
+                    OfferRepository.mark_accepted(db, UUID(str(cls._get_offer_id(offer))))
 
-                    # Rechazar las demás ofertas de ese mismo partido
+                    # Rechazar las demás ofertas del mismo partido
                     OfferRepository.reject_other_offers_for_match(
                         db=db,
-                        id_partido=int(match.id_partido),
-                        accepted_offer_id=int(offer.id_oferta),
+                        match_id=match_id,
+                        accepted_offer_id=UUID(str(cls._get_offer_id(offer))),
                     )
 
                     db.flush()
 
                     return {
                         "message": "Oferta aceptada y arquero asignado correctamente.",
-                        "offer_id": int(offer.id_oferta),
-                        "match_id": int(match.id_partido),
-                        "status": "accepted",
+                        "offer_id": str(cls._get_offer_id(offer)),
+                        "match_id": match_id,
+                        "status": OfferStatus.accepted.value,
                     }
 
             except Exception:
@@ -277,7 +374,7 @@ class OfferService:
     # Rechazar oferta
     # -----------------------------
     @classmethod
-    def reject_offer(cls, current_user: Any, offer_id: int):
+    def reject_offer(cls, current_user: Any, offer_id: Any):
         """
         Rechaza una oferta.
 
@@ -288,23 +385,25 @@ class OfferService:
         with SessionLocal() as db:
             try:
                 with db.begin():
-                    offer = OfferRepository.get_by_id_for_update(db, offer_id)
+                    offer = OfferRepository.get_by_id_for_update(db, UUID(str(offer_id)))
                     if not offer:
                         raise LookupError("La oferta no existe.")
 
-                    if int(offer.target_user_id) != user_id:
+                    recipient_id = cls._get_offer_recipient_id(offer)
+                    if recipient_id != user_id:
                         raise PermissionError("Solo el receptor de la oferta puede rechazarla.")
 
-                    if offer.estado != "pendiente":
+                    offer_status = str(cls._get_attr(offer, "status", "")).lower().strip()
+                    if offer_status != OfferStatus.pending.value:
                         raise ValueError("Solo se pueden rechazar ofertas pendientes.")
 
-                    OfferRepository.mark_rejected(db, int(offer.id_oferta))
+                    OfferRepository.mark_rejected(db, UUID(str(cls._get_offer_id(offer))))
                     db.flush()
 
                     return {
                         "message": "Oferta rechazada correctamente.",
-                        "offer_id": int(offer.id_oferta),
-                        "status": "rejected",
+                        "offer_id": str(cls._get_offer_id(offer)),
+                        "status": OfferStatus.rejected.value,
                     }
 
             except Exception:

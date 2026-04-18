@@ -1,6 +1,7 @@
 # app/repositories/offer_repository.py
 
-from typing import List, Optional
+from typing import Any, List, Optional
+from uuid import UUID
 
 from sqlalchemy.orm import Session
 
@@ -9,50 +10,62 @@ from app.models.offer import Offer
 
 class OfferRepository:
     """
-    Capa de acceso a datos para ofertas.
+    Capa de acceso a datos para la tabla offers.
 
-    Esta clase no toma decisiones de negocio.
-    Solo consulta, crea y actualiza registros en la base de datos.
+    Esta clase:
+    - no decide reglas de negocio
+    - no valida permisos
+    - no toma decisiones de flujo
+
+    Solo crea, consulta y actualiza registros.
     """
 
     @staticmethod
     def create(db: Session, offer_data: dict) -> Offer:
         """
-        Crea una nueva oferta en la base de datos.
-        No hace commit, porque eso lo controla el servicio.
+        Crea una nueva oferta.
+
+        Espera un diccionario con claves como:
+        - match_id
+        - sender_role
+        - player_id
+        - goalkeeper_id
+        - price
+        - status
+
+        No hace commit. Eso lo controla el service.
         """
         offer = Offer(
-            id_partido=offer_data["id_partido"],
-            id_jugador=offer_data["id_jugador"],
-            id_arquero=offer_data["id_arquero"],
-            precio=offer_data["precio"],
-            estado=offer_data.get("estado", "pendiente"),
-            created_by_user_id=offer_data["created_by_user_id"],
-            created_by_role=offer_data["created_by_role"],
-            target_user_id=offer_data["target_user_id"],
+            match_id=offer_data["match_id"],
+            sender_role=offer_data["sender_role"],
+            player_id=offer_data["player_id"],
+            goalkeeper_id=offer_data["goalkeeper_id"],
+            price=offer_data["price"],
+            status=offer_data.get("status", "pending"),
         )
 
         db.add(offer)
-        db.flush()      # asigna ID sin hacer commit
+        db.flush()
         db.refresh(offer)
         return offer
 
     @staticmethod
-    def get_by_id(db: Session, offer_id: int) -> Optional[Offer]:
+    def get_by_id(db: Session, offer_id: UUID) -> Optional[Offer]:
         """
-        Obtiene una oferta por su ID.
+        Devuelve una oferta por su UUID.
         """
-        return db.query(Offer).filter(Offer.id_oferta == offer_id).first()
+        return db.query(Offer).filter(Offer.id == offer_id).first()
 
     @staticmethod
-    def get_by_id_for_update(db: Session, offer_id: int) -> Optional[Offer]:
+    def get_by_id_for_update(db: Session, offer_id: UUID) -> Optional[Offer]:
         """
-        Obtiene una oferta bloqueándola para evitar condiciones de carrera.
-        Esto se usa dentro de una transacción.
+        Devuelve una oferta bloqueándola dentro de la transacción.
+
+        Útil para evitar condiciones de carrera al aceptar o rechazar ofertas.
         """
         return (
             db.query(Offer)
-            .filter(Offer.id_oferta == offer_id)
+            .filter(Offer.id == offer_id)
             .with_for_update()
             .first()
         )
@@ -60,82 +73,127 @@ class OfferRepository:
     @staticmethod
     def get_pending_offer_between(
         db: Session,
-        id_partido: int,
-        id_jugador: int,
-        id_arquero: int,
+        match_id: int,
+        player_id: UUID,
+        goalkeeper_id: UUID,
+        sender_role: str,
     ) -> Optional[Offer]:
         """
-        Busca si ya existe una oferta pendiente entre el mismo jugador,
-        el mismo arquero y el mismo partido.
+        Busca si ya existe una oferta pendiente entre:
+        - el mismo partido
+        - el mismo jugador
+        - el mismo arquero
+        - el mismo rol de envío
+
+        Esto sirve para evitar ofertas duplicadas exactas.
         """
         return (
             db.query(Offer)
             .filter(
-                Offer.id_partido == id_partido,
-                Offer.id_jugador == id_jugador,
-                Offer.id_arquero == id_arquero,
-                Offer.estado == "pendiente",
+                Offer.match_id == match_id,
+                Offer.player_id == player_id,
+                Offer.goalkeeper_id == goalkeeper_id,
+                Offer.sender_role == sender_role,
+                Offer.status == "pending",
             )
             .first()
         )
 
     @staticmethod
-    def list_sent_by_user(db: Session, user_id: int) -> List[Offer]:
+    def list_sent_by_user(db: Session, user_id: UUID) -> List[Offer]:
         """
-        Devuelve las ofertas enviadas por un usuario.
+        Devuelve SOLO las ofertas que el usuario ha enviado.
+
+        Se determina según:
+        - Si es player → player_id == user_id AND sender_role = 'player'
+        - Si es goalkeeper → goalkeeper_id == user_id AND sender_role = 'goalkeeper'
         """
         return (
             db.query(Offer)
-            .filter(Offer.created_by_user_id == user_id)
-            .order_by(Offer.fecha_oferta.desc())
+            .filter(
+                (
+                    (Offer.player_id == user_id) &
+                    (Offer.sender_role == OfferSender.player)
+                ) |
+                (
+                    (Offer.goalkeeper_id == user_id) &
+                    (Offer.sender_role == OfferSender.goalkeeper)
+                )
+            )
+            .order_by(Offer.created_at.desc())
             .all()
         )
 
     @staticmethod
-    def list_received_by_user(db: Session, user_id: int) -> List[Offer]:
+    def list_received_by_user(db: Session, user_id: UUID) -> List[Offer]:
         """
-        Devuelve las ofertas recibidas por un usuario.
+        Devuelve SOLO las ofertas que el usuario ha recibido.
+
+        Se determina según:
+        - Si es player → player_id == user_id AND sender_role = 'goalkeeper'
+        - Si es goalkeeper → goalkeeper_id == user_id AND sender_role = 'player'
         """
         return (
             db.query(Offer)
-            .filter(Offer.target_user_id == user_id)
-            .order_by(Offer.fecha_oferta.desc())
+            .filter(
+                (
+                    (Offer.player_id == user_id) &
+                    (Offer.sender_role == OfferSender.goalkeeper)
+                ) |
+                (
+                    (Offer.goalkeeper_id == user_id) &
+                    (Offer.sender_role == OfferSender.player)
+                )
+            )
+            .order_by(Offer.created_at.desc())
             .all()
         )
 
     @staticmethod
-    def mark_accepted(db: Session, offer_id: int) -> Optional[Offer]:
+    def list_by_match(db: Session, match_id: int) -> List[Offer]:
+        """
+        Devuelve todas las ofertas asociadas a un partido.
+        """
+        return (
+            db.query(Offer)
+            .filter(Offer.match_id == match_id)
+            .order_by(Offer.created_at.desc())
+            .all()
+        )
+
+    @staticmethod
+    def mark_accepted(db: Session, offer_id: UUID) -> Optional[Offer]:
         """
         Marca una oferta como aceptada.
         """
         offer = (
             db.query(Offer)
-            .filter(Offer.id_oferta == offer_id)
+            .filter(Offer.id == offer_id)
             .with_for_update()
             .first()
         )
 
         if offer:
-            offer.estado = "aceptada"
+            offer.status = "accepted"
             db.flush()
             db.refresh(offer)
 
         return offer
 
     @staticmethod
-    def mark_rejected(db: Session, offer_id: int) -> Optional[Offer]:
+    def mark_rejected(db: Session, offer_id: UUID) -> Optional[Offer]:
         """
         Marca una oferta como rechazada.
         """
         offer = (
             db.query(Offer)
-            .filter(Offer.id_oferta == offer_id)
+            .filter(Offer.id == offer_id)
             .with_for_update()
             .first()
         )
 
         if offer:
-            offer.estado = "rechazada"
+            offer.status = "rejected"
             db.flush()
             db.refresh(offer)
 
@@ -144,8 +202,8 @@ class OfferRepository:
     @staticmethod
     def reject_other_offers_for_match(
         db: Session,
-        id_partido: int,
-        accepted_offer_id: int,
+        match_id: int,
+        accepted_offer_id: UUID,
     ) -> int:
         """
         Rechaza automáticamente todas las demás ofertas del mismo partido,
@@ -156,12 +214,12 @@ class OfferRepository:
         updated_rows = (
             db.query(Offer)
             .filter(
-                Offer.id_partido == id_partido,
-                Offer.id_oferta != accepted_offer_id,
-                Offer.estado == "pendiente",
+                Offer.match_id == match_id,
+                Offer.id != accepted_offer_id,
+                Offer.status == "pending",
             )
             .update(
-                {"estado": "rechazada"},
+                {"status": "rejected"},
                 synchronize_session=False,
             )
         )
@@ -170,14 +228,27 @@ class OfferRepository:
         return updated_rows
 
     @staticmethod
-    def list_by_match(db: Session, id_partido: int) -> List[Offer]:
+    def has_pending_offer_from_sender(
+        db: Session,
+        match_id: int,
+        player_id: UUID,
+        goalkeeper_id: UUID,
+        sender_role: str,
+    ) -> bool:
         """
-        Lista todas las ofertas de un partido.
-        Útil para pantallas de detalle o auditoría.
+        Verifica si ya existe una oferta pendiente exactamente igual.
+
+        Útil para evitar duplicados antes de insertar una nueva oferta.
         """
-        return (
+        exists_offer = (
             db.query(Offer)
-            .filter(Offer.id_partido == id_partido)
-            .order_by(Offer.fecha_oferta.desc())
-            .all()
+            .filter(
+                Offer.match_id == match_id,
+                Offer.player_id == player_id,
+                Offer.goalkeeper_id == goalkeeper_id,
+                Offer.sender_role == sender_role,
+                Offer.status == "pending",
+            )
+            .first()
         )
+        return exists_offer is not None

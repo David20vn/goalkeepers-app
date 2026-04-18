@@ -1,17 +1,41 @@
 # app/routers/offer_router.py
 
+from uuid import UUID
+from typing import Any, List
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from typing import List, Any
 
 from app.dependencies.auth_dependencies import get_current_user
-from app.schemas.offer import (
-    OfferCreate,
-    OfferRead,
-    OfferActionResponse,
-)
+from app.schemas.offer import OfferCreate, OfferRead, OfferActionResponse
 from app.services.offer_service import OfferService
 
-router = APIRouter(tags=["Offers"])
+router = APIRouter()
+
+
+def _map_service_exception(exc: Exception) -> HTTPException:
+    """
+    Convierte excepciones de negocio en respuestas HTTP coherentes.
+    """
+    if isinstance(exc, ValueError):
+        return HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=str(exc),
+        )
+    if isinstance(exc, PermissionError):
+        return HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=str(exc),
+        )
+    if isinstance(exc, LookupError):
+        return HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(exc),
+        )
+
+    return HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail="Error interno del servidor.",
+    )
 
 
 @router.post(
@@ -21,122 +45,121 @@ router = APIRouter(tags=["Offers"])
     summary="Crear una oferta",
     description=(
         "Crea una oferta entre un jugador y un arquero. "
-        "El precio debe salir del perfil del arquero y la lógica de validación "
-        "se ejecuta en la capa de servicio."
+        "La validación de roles, estado del partido y precio se ejecuta en la capa de servicio."
     ),
 )
-def create_offer( payload: OfferCreate, current_user: Any = Depends(get_current_user), ):
+def create_offer(
+    payload: OfferCreate,
+    current_user: Any = Depends(get_current_user),
+):
     """
     Crea una nueva oferta.
-    Puede ser iniciada por un jugador o por un arquero, según las reglas del sistema.
+    El service decide si el usuario autenticado puede crearla y cómo debe construirse.
     """
     try:
         return OfferService.create_offer(current_user=current_user, payload=payload)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise _map_service_exception(exc)
 
 
 @router.get(
     "/sent",
     response_model=List[OfferRead],
+    status_code=status.HTTP_200_OK,
     summary="Listar ofertas enviadas",
-    description="Devuelve las ofertas que el usuario autenticado ha enviado.",
+    description="Devuelve las ofertas enviadas por el usuario autenticado.",
 )
-def list_sent_offers( current_user: Any = Depends(get_current_user), ):
+def list_sent_offers(
+    current_user: Any = Depends(get_current_user),
+):
     """
-    Retorna las ofertas que el usuario autenticado ha enviado.
+    Retorna las ofertas enviadas por el usuario autenticado.
     """
     try:
         return OfferService.list_sent_offers(current_user=current_user)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise _map_service_exception(exc)
 
 
 @router.get(
     "/received",
     response_model=List[OfferRead],
+    status_code=status.HTTP_200_OK,
     summary="Listar ofertas recibidas",
-    description="Devuelve las ofertas que el usuario autenticado ha recibido.",
+    description="Devuelve las ofertas recibidas por el usuario autenticado.",
 )
-def list_received_offers( current_user: Any = Depends(get_current_user), ):
+def list_received_offers(
+    current_user: Any = Depends(get_current_user),
+):
     """
-    Retorna las ofertas que el usuario autenticado ha recibido.
+    Retorna las ofertas recibidas por el usuario autenticado.
     """
     try:
         return OfferService.list_received_offers(current_user=current_user)
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise _map_service_exception(exc)
 
 
 @router.get(
     "/{offer_id}",
     response_model=OfferRead,
+    status_code=status.HTTP_200_OK,
     summary="Obtener una oferta por ID",
-    description="Devuelve el detalle de una oferta específica.",
+    description="Devuelve el detalle de una oferta específica. Solo pueden verla los participantes autorizados.",
 )
-def get_offer_by_id( offer_id: int, current_user: Any = Depends(get_current_user), ):
+def get_offer_by_id(
+    offer_id: UUID,
+    current_user: Any = Depends(get_current_user),
+):
     """
     Devuelve la información de una oferta específica.
-    La capa de servicio debe validar que el usuario tenga permiso para verla.
+    El service valida permisos y existencia.
     """
     try:
         return OfferService.get_offer_by_id(current_user=current_user, offer_id=offer_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise _map_service_exception(exc)
 
 
 @router.put(
     "/{offer_id}/accept",
     response_model=OfferActionResponse,
+    status_code=status.HTTP_200_OK,
     summary="Aceptar oferta",
     description=(
-        "Acepta una oferta y dispara la asignación del arquero al partido. "
-        "La transacción debe evitar doble asignación."
+        "Acepta una oferta y asigna el arquero al partido en una sola operación. "
+        "Solo el receptor de la oferta puede ejecutarlo."
     ),
 )
-def accept_offer( offer_id: int, current_user: Any = Depends(get_current_user), ):
+def accept_offer(
+    offer_id: UUID,
+    current_user: Any = Depends(get_current_user),
+):
     """
-    Acepta una oferta.
-    La capa de servicio debe ejecutar la transacción completa:
-    validar estado, asignar arquero, marcar oferta como aceptada y rechazar las demás.
+    Acepta una oferta y activa la asignación del arquero.
     """
     try:
         return OfferService.accept_offer(current_user=current_user, offer_id=offer_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc))
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise _map_service_exception(exc)
 
 
 @router.put(
     "/{offer_id}/reject",
     response_model=OfferActionResponse,
+    status_code=status.HTTP_200_OK,
     summary="Rechazar oferta",
     description="Rechaza una oferta recibida por el usuario autenticado.",
 )
-def reject_offer( offer_id: int, current_user: Any = Depends(get_current_user), ):
+def reject_offer(
+    offer_id: UUID,
+    current_user: Any = Depends(get_current_user),
+):
     """
     Rechaza una oferta.
+    Solo el receptor puede rechazarla.
     """
     try:
         return OfferService.reject_offer(current_user=current_user, offer_id=offer_id)
-    except LookupError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc))
-    except PermissionError as exc:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc))
     except Exception as exc:
-        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc))
+        raise _map_service_exception(exc)
