@@ -32,11 +32,8 @@ ENV/
 *.sqlite3
 
 
-# IDEs / EDITORS
-
 # VSCode
 .vscode/
-
 
 
 # OS FILES
@@ -65,3 +62,6 @@ notebooks/
 # TEMP FILES
 *.tmp
 *.bak
+
+# TEST
+*.http
