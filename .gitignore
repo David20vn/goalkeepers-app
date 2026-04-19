@@ -56,7 +56,6 @@ credentials.json
 
 # OPTIONAL (DATA / ML FUTURE)
 data/
-models/
 notebooks/
 
 # TEMP FILES

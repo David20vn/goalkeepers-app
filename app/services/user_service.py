@@ -1,13 +1,20 @@
-from app.db import user_db as user_db
+from sqlalchemy.ext.asyncio import AsyncSession
+from app.repositories.user_repository import UserRepository
+from app.schemas.user_schema import UserUpdate
+from uuid import UUID
 
-async def get_my_profile(user_id: str):
-    user = await user_db.get_user_by_id(user_id)
+
+async def get_my_profile(db: AsyncSession, user_id: UUID):
+    user = await UserRepository(db).get_by_id(user_id)
     if not user:
         raise ValueError("User not found")
     return user
 
-async def update_my_profile(user_id: str, data: dict):
-    fields = {k: v for k, v in data.items() if v is not None}
-    if not fields:
+
+async def update_my_profile(db: AsyncSession, user_id: UUID, data: UserUpdate):
+    user = await UserRepository(db).update(user_id, data)
+    if not user:
         raise ValueError("No fields to update")
-    return await user_db.update_user(user_id, fields)
+    await db.commit()
+    await db.refresh(user)
+    return user

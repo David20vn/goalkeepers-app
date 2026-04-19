@@ -28,5 +28,3 @@ def root():
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-print(settings.SECRET_KEY)
