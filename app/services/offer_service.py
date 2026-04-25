@@ -4,7 +4,7 @@ from app.schemas.offer_schema import OfferCreate
 from app.repositories.offer_repository import OfferRepository
 from app.repositories.match_repository import MatchRepository
 from app.repositories.goalkeeper_repository import GoalkeeperRepository
-from app.repositories.player_repository import PlayerRepository
+from app.repositories.player_repository import PlayerRepository #falta por crear
 
 
 class OfferService:
@@ -118,43 +118,219 @@ class OfferService:
 
     @staticmethod
     def list_sent_offers(current_user):
-        """
-        Lista las ofertas enviadas por el usuario actual.
-        """
-        # TODO: validar rol del usuario
-        return OfferRepository.list_sent_offers(current_user=current_user)
+        role = OfferService._get_user_role(current_user)
+        user_id = getattr(current_user, "id", None)
+
+        if user_id is None:
+            raise ValueError("No se pudo identificar al usuario autenticado.")
+
+        if role == "player":
+            return OfferRepository.list_sent_offers_by_player_id(player_id=user_id)
+
+        if role == "goalkeeper":
+            goalkeeper = GoalkeeperRepository.get_by_user_id(user_id)
+            if not goalkeeper:
+                raise ValueError("El arquero no tiene perfil creado.")
+
+            goalkeeper_id = getattr(goalkeeper, "id", None)
+            if goalkeeper_id is None:
+                raise ValueError("No se pudo identificar el perfil del arquero.")
+
+            return OfferRepository.list_sent_offers_by_goalkeeper_id(goalkeeper_id=goalkeeper_id)
+
+        raise PermissionError("Rol no autorizado para consultar ofertas enviadas.")
 
     @staticmethod
     def list_received_offers(current_user):
-        """
-        Lista las ofertas recibidas por el usuario actual.
-        """
-        # TODO: validar rol del usuario
-        return OfferRepository.list_received_offers(current_user=current_user)
+        role = OfferService._get_user_role(current_user)
+        user_id = getattr(current_user, "id", None)
+
+        if user_id is None:
+            raise ValueError("No se pudo identificar al usuario autenticado.")
+
+        if role == "player":
+            return OfferRepository.list_received_offers_by_player_id(player_id=user_id)
+
+        if role == "goalkeeper":
+            goalkeeper = GoalkeeperRepository.get_by_user_id(user_id)
+            if not goalkeeper:
+                raise ValueError("El arquero no tiene perfil creado.")
+
+            goalkeeper_id = getattr(goalkeeper, "id", None)
+            if goalkeeper_id is None:
+                raise ValueError("No se pudo identificar el perfil del arquero.")
+
+            return OfferRepository.list_received_offers_by_goalkeeper_id(goalkeeper_id=goalkeeper_id)
+
+        raise PermissionError("Rol no autorizado para consultar ofertas recibidas.")
 
     @staticmethod
     def get_offer_by_id(current_user, offer_id):
-        """
-        Obtiene una oferta por su ID.
-        """
-        # TODO: validar permisos de acceso a la oferta
-        return OfferRepository.get_offer_by_id(current_user=current_user, offer_id=offer_id)
+        role = OfferService._get_user_role(current_user)
+        user_id = getattr(current_user, "id", None)
+
+        if user_id is None:
+            raise ValueError("No se pudo identificar al usuario autenticado.")
+
+        offer = OfferRepository.get_offer_by_id(offer_id=offer_id)
+        if not offer:
+            raise ValueError("La oferta no existe.")
+
+        offer_player_id = OfferService._get_attr(offer, "player_id")
+        offer_goalkeeper_id = OfferService._get_attr(offer, "goalkeeper_id")
+        sender_role = OfferService._get_attr(offer, "sender_role", "created_by_role")
+
+        # Obtener el perfil del arquero autenticado si aplica
+        current_goalkeeper_id = None
+        if role == "goalkeeper":
+            goalkeeper = GoalkeeperRepository.get_by_user_id(user_id)
+            if not goalkeeper:
+                raise ValueError("El arquero no tiene perfil creado.")
+            current_goalkeeper_id = getattr(goalkeeper, "id", None)
+            if current_goalkeeper_id is None:
+                raise ValueError("No se pudo identificar el perfil del arquero.")
+
+        # Validación de acceso:
+        # - un jugador solo puede ver ofertas relacionadas con sus partidos / donde sea participante
+        # - un arquero solo puede ver ofertas donde sea el destinatario o participante
+        if role == "player":
+            if offer_player_id != user_id:
+                raise PermissionError("No tienes permiso para ver esta oferta.")
+
+        elif role == "goalkeeper":
+            if offer_goalkeeper_id != current_goalkeeper_id:
+                raise PermissionError("No tienes permiso para ver esta oferta.")
+
+        else:
+            raise PermissionError("Rol no autorizado para consultar ofertas.")
+
+        return offer
 
     @staticmethod
     def accept_offer(current_user, offer_id):
-        """
-        Acepta una oferta.
-        """
-        # TODO: validar que el usuario pueda aceptar esta oferta
-        # TODO: validar estado actual de la oferta
-        # TODO: actualizar oferta y asignar arquero al partido
-        return OfferRepository.accept_offer(current_user=current_user, offer_id=offer_id)
+        role = OfferService._get_user_role(current_user)
+        user_id = getattr(current_user, "id", None)
+
+        if user_id is None:
+            raise ValueError("No se pudo identificar al usuario autenticado.")
+
+        if role not in {"player", "goalkeeper"}:
+            raise PermissionError("Rol no autorizado para aceptar ofertas.")
+
+        offer = OfferRepository.get_offer_by_id(offer_id=offer_id)
+        if not offer:
+            raise ValueError("La oferta no existe.")
+
+        offer_status = OfferService._get_attr(offer, "status", "offer_status")
+        if offer_status and str(offer_status).lower() != "pending":
+            raise ValueError("Solo se pueden aceptar ofertas pendientes.")
+
+        offer_player_id = OfferService._get_attr(offer, "player_id")
+        offer_goalkeeper_id = OfferService._get_attr(offer, "goalkeeper_id")
+        match_id = OfferService._get_attr(offer, "match_id")
+
+        if match_id is None:
+            raise ValueError("La oferta no está asociada a un partido.")
+
+        match = MatchRepository.get_by_id(match_id)
+        if not match:
+            raise ValueError("El partido asociado a la oferta no existe.")
+
+        match_status = OfferService._get_attr(match, "status", "match_status")
+        if match_status and str(match_status).lower() in {"asignado", "assigned"}:
+            raise ValueError("El partido ya tiene un arquero asignado.")
+
+        if getattr(match, "goalkeeper_id", None) is not None:
+            raise ValueError("El partido ya tiene un arquero asignado.")
+
+        # Verificar que solo el receptor de la oferta pueda aceptarla
+        if role == "player":
+            if offer_player_id != user_id:
+                raise PermissionError("Solo el receptor de la oferta puede aceptarla.")
+        elif role == "goalkeeper":
+            goalkeeper = GoalkeeperRepository.get_by_user_id(user_id)
+            if not goalkeeper:
+                raise ValueError("El arquero no tiene perfil creado.")
+
+            current_goalkeeper_id = getattr(goalkeeper, "id", None)
+            if current_goalkeeper_id is None:
+                raise ValueError("No se pudo identificar el perfil del arquero.")
+
+            if offer_goalkeeper_id != current_goalkeeper_id:
+                raise PermissionError("Solo el receptor de la oferta puede aceptarla.")
+
+        # Obtener el arquero que será asignado al partido
+        if offer_goalkeeper_id is None:
+            raise ValueError("La oferta no tiene arquero asociado.")
+
+        goalkeeper = GoalkeeperRepository.get_by_id(offer_goalkeeper_id)
+        if not goalkeeper:
+            raise ValueError("El arquero asociado a la oferta no existe.")
+
+        # Operación principal:
+        # 1. marcar oferta como aceptada
+        # 2. marcar ofertas relacionadas al mismo partido como rechazadas o inactivas
+        # 3. asignar arquero al partido
+        # 4. cambiar estado del partido a Asignado
+        accepted_offer = OfferRepository.accept_offer(offer_id=offer_id)
+        MatchRepository.assign_goalkeeper_to_match(
+            match_id=match_id,
+            goalkeeper_id=offer_goalkeeper_id,
+            status="Asignado",
+        )
+        OfferRepository.reject_other_offers_for_match(match_id=match_id, except_offer_id=offer_id)
+
+        return accepted_offer
 
     @staticmethod
     def reject_offer(current_user, offer_id):
-        """
-        Rechaza una oferta.
-        """
-        # TODO: validar que el usuario pueda rechazar esta oferta
-        # TODO: validar estado actual de la oferta
-        return OfferRepository.reject_offer(current_user=current_user, offer_id=offer_id)
+        role = OfferService._get_user_role(current_user)
+        user_id = getattr(current_user, "id", None)
+
+        if user_id is None:
+            raise ValueError("No se pudo identificar al usuario autenticado.")
+
+        if role not in {"player", "goalkeeper"}:
+            raise PermissionError("Rol no autorizado para rechazar ofertas.")
+
+        offer = OfferRepository.get_offer_by_id(offer_id=offer_id)
+        if not offer:
+            raise ValueError("La oferta no existe.")
+
+        offer_status = OfferService._get_attr(offer, "status", "offer_status")
+        if offer_status and str(offer_status).lower() != "pending":
+            raise ValueError("Solo se pueden rechazar ofertas pendientes.")
+
+        offer_player_id = OfferService._get_attr(offer, "player_id")
+        offer_goalkeeper_id = OfferService._get_attr(offer, "goalkeeper_id")
+        match_id = OfferService._get_attr(offer, "match_id")
+
+        if match_id is None:
+            raise ValueError("La oferta no está asociada a un partido.")
+
+        match = MatchRepository.get_by_id(match_id)
+        if not match:
+            raise ValueError("El partido asociado a la oferta no existe.")
+
+        match_status = OfferService._get_attr(match, "status", "match_status")
+        if match_status and str(match_status).lower() in {"asignado", "assigned"}:
+            raise ValueError("No se puede rechazar una oferta de un partido ya asignado.")
+
+        # Solo el receptor de la oferta puede rechazarla
+        if role == "player":
+            if offer_player_id != user_id:
+                raise PermissionError("Solo el receptor de la oferta puede rechazarla.")
+        elif role == "goalkeeper":
+            goalkeeper = GoalkeeperRepository.get_by_user_id(user_id)
+            if not goalkeeper:
+                raise ValueError("El arquero no tiene perfil creado.")
+
+            current_goalkeeper_id = getattr(goalkeeper, "id", None)
+            if current_goalkeeper_id is None:
+                raise ValueError("No se pudo identificar el perfil del arquero.")
+
+            if offer_goalkeeper_id != current_goalkeeper_id:
+                raise PermissionError("Solo el receptor de la oferta puede rechazarla.")
+
+        rejected_offer = OfferRepository.reject_offer(offer_id=offer_id)
+        return rejected_offer

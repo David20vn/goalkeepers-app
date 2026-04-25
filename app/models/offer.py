@@ -5,10 +5,19 @@ from uuid import uuid4
 from sqlalchemy import Column, Integer, String, DateTime, Numeric, ForeignKey, func, Enum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-from enum import Enum as PyEnum
-
+from enum import Enum
 from app.core.database import Base
 
+
+class OfferStatus(str, Enum):
+    PENDING = "pending"
+    ACCEPTED = "accepted"
+    REJECTED = "rejected"
+
+
+class OfferSender(str, Enum):
+    PLAYER = "player"
+    GOALKEEPER = "goalkeeper"
 
 class Offer(Base):
     __tablename__ = "offers"
@@ -22,7 +31,7 @@ class Offer(Base):
     status = Column(
     Enum(OfferStatus, name="offer_status"),
     nullable=False,
-    default=Offer_status.PENDING
+    default=OfferStatus.PENDING
     )
 
     sender_role = Column(
