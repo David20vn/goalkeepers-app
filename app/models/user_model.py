@@ -1,5 +1,6 @@
 from sqlalchemy import String, DateTime, func, Text
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import relationship
 from app.core.database import Base
 from sqlalchemy.dialects.postgresql import UUID, ENUM
 from datetime import datetime
@@ -30,3 +31,5 @@ class User(Base):
     deleted_at: Mapped[datetime | None] = mapped_column(
         DateTime(timezone=True), nullable=True
     )
+
+    goalkeeper_profile = relationship("Goalkeeper", back_populates="user", uselist=False)
