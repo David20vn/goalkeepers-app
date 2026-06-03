@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import user_router, auth_router, goalkeeper_router
+from app.routers import user_router, auth_router, goalkeeper_router, player_router
 
 from app.core.config import settings
 
@@ -20,7 +20,8 @@ app.add_middleware(
 
 app.include_router(user_router.router)
 app.include_router(auth_router.router)
-app.include_router(goalkeeper_router.router, prefix="/goalkeepers")
+app.include_router(goalkeeper_router.router)
+app.include_router(player_router.router)
 
 @app.get("/")
 def root():

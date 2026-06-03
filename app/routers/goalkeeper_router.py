@@ -15,7 +15,7 @@ from app.schemas.goalkeeper_schema import (
 )
 from app.services.goalkeeper_service import GoalkeeperService
 
-router = APIRouter( tags=["goalkeeper"])
+router = APIRouter( prefix="/goalkeepers", tags=["goalkeeper"])
 
 
 def _map_service_exception(exc: Exception) -> HTTPException:
