@@ -33,5 +33,4 @@ class User(Base):
     )
 
     goalkeeper_profile = relationship("Goalkeeper", back_populates="user", uselist=False)
-
     player_profile = relationship("Player", back_populates="user", uselist=False)

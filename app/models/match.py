@@ -28,3 +28,4 @@ class Match(Base):
 
     player = relationship("User", foreign_keys=[player_id], backref="matches_created")
     goalkeeper = relationship("User", foreign_keys=[goalkeeper_id], backref="matches_assigned")
+    offers = relationship("Offer", back_populates="match", cascade="all, delete-orphan")
