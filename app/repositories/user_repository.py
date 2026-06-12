@@ -17,16 +17,22 @@ class UserRepository:
     async def get_by_email(self, email: str) -> User | None:
         result = await self.db.execute(select(User).where(User.email == email))
         return result.scalar_one_or_none()
+    
+    async def get_by_phone(self, phone: str):
+        result = await self.db.execute(
+            select(User).where(User.phone_number == phone)
+        )
+        return result.scalar_one_or_none()
 
     async def create(self, data: RegisterRequest, hashed_password: str) -> User:
         user = User(
             name=data.name,
             email=data.email,
             password_hash=hashed_password,
+            phone_number=data.phone_number,
             role=data.role,
         )
         self.db.add(user)
-        await self.db.flush()
         return user
 
     async def update(self, user_id: UUID, data: UserUpdate) -> User | None:

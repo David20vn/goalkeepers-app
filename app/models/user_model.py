@@ -1,6 +1,5 @@
-from sqlalchemy import String, DateTime, func, Text
-from sqlalchemy.orm import Mapped, mapped_column
-from sqlalchemy.orm import relationship
+from sqlalchemy import String, DateTime, func, Text, Column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 from app.core.database import Base
 from sqlalchemy.dialects.postgresql import UUID, ENUM
 from datetime import datetime
@@ -21,6 +20,7 @@ class User(Base):
         String(254), unique=True, nullable=False, index=True
     )
     password_hash: Mapped[str] = mapped_column(Text, nullable=False)
+    phone_number = Column(String(20), unique=True, nullable=True)
     role: Mapped[str] = mapped_column(user_role_enum, nullable=False, default="player")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
