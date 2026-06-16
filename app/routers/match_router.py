@@ -111,3 +111,19 @@ async def update_match(
         return await service.update_match(match_id, current_user=current_user, payload=payload)
     except Exception as exc:
         raise _map_service_exception(exc)
+    
+@router.put(
+    "/{match_id}/finalize",
+    response_model=MatchRead,
+    summary="Finalize a match",
+    description="Mark the match as finished. Only the player who created it can do this."
+)
+async def finalize_match(
+    match_id: UUID,
+    current_user: Any = Depends(get_current_user),
+    service: MatchService = Depends(get_match_service),
+):
+    try:
+        return await service.finalize_match(match_id, current_user)
+    except Exception as exc:
+        raise _map_service_exception(exc)

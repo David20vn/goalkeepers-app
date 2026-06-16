@@ -1,7 +1,7 @@
 from uuid import UUID
 from typing import Optional, List
 
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.goalkeeper import Goalkeeper

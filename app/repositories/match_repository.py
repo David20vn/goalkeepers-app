@@ -54,3 +54,12 @@ class MatchRepository:
         await self.session.commit()
         await self.session.refresh(match)
         return match
+
+    async def finalize(self, match_id: UUID) -> Optional[Match]:
+        match = await self.get_by_id(match_id)
+        if not match:
+            return None
+        match.status = "Finalizado"
+        await self.session.commit()
+        await self.session.refresh(match)
+        return match

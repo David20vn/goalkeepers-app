@@ -1,6 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from app.routers import user_router, auth_router, goalkeeper_router, player_router, match_router, offer_router
+from app.routers import user_router, auth_router, goalkeeper_router, player_router, match_router, offer_router, rating_router
 
 from app.core.config import settings
 
@@ -24,11 +24,4 @@ app.include_router(goalkeeper_router.router)
 app.include_router(player_router.router)
 app.include_router(match_router.router)
 app.include_router(offer_router.router)
-
-@app.get("/")
-def root():
-    return {"status": "ok"}
-
-@app.get("/health")
-def health():
-    return {"status": "ok"}
+app.include_router(rating_router.router)
