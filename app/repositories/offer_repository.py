@@ -90,3 +90,14 @@ class OfferRepository:
             )
         )
         return result.scalar_one_or_none() is not None
+    
+    async def reject_all_pending_for_match(self, match_id: UUID) -> None:
+        await self.session.execute(
+            update(Offer)
+            .where(
+                Offer.match_id == match_id,
+                Offer.status == "pending"
+            )
+            .values(status="rejected")
+        )
+        await self.session.commit()

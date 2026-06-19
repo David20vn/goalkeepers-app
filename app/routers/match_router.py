@@ -127,3 +127,19 @@ async def finalize_match(
         return await service.finalize_match(match_id, current_user)
     except Exception as exc:
         raise _map_service_exception(exc)
+    
+@router.put(
+    "/{match_id}/cancel",
+    response_model=MatchRead,
+    summary="Cancel a match",
+    description="Cancel a match that has no goalkeeper assigned yet. All pending offers for this match will be rejected. Only the match owner can cancel."
+)
+async def cancel_match(
+    match_id: UUID,
+    current_user: Any = Depends(get_current_user),
+    service: MatchService = Depends(get_match_service),
+):
+    try:
+        return await service.cancel_match(match_id, current_user)
+    except Exception as exc:
+        raise _map_service_exception(exc)

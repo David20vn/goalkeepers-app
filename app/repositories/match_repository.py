@@ -3,6 +3,7 @@ from typing import List, Optional
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.match import Match
+from app.models.offer import Offer
 
 
 class MatchRepository:
@@ -60,6 +61,15 @@ class MatchRepository:
         if not match:
             return None
         match.status = "Finalizado"
+        await self.session.commit()
+        await self.session.refresh(match)
+        return match
+
+    async def cancel(self, match_id: UUID) -> Optional[Match]:
+        match = await self.get_by_id(match_id)
+        if not match:
+            return None
+        match.status = "Cancelado"
         await self.session.commit()
         await self.session.refresh(match)
         return match
