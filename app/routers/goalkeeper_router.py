@@ -107,16 +107,19 @@ async def update_profile(
 @router.get(
     "/",
     response_model=List[GoalkeeperRead],
-    status_code=status.HTTP_200_OK,
-    summary="List goalkeeper profiles",
-    description="Get a list of goalkeeper profiles, optionally filtered by minimum average rating.",
+    summary="List goalkeeper profiles with optional filters",
 )
 async def list_profiles(
-    min_rating: Optional[float] = Query(None, ge=0.0, le=5.0),
+    min_rating: Optional[float] = Query(None, ge=0.0, le=5.0, description="Minimum average rating"),
+    min_price: Optional[float] = Query(None, ge=0.0, description="Minimum fixed price"),
+    max_price: Optional[float] = Query(None, ge=0.0, description="Maximum fixed price"),
     service: GoalkeeperService = Depends(get_goalkeeper_service),
 ):
     try:
-        rating = min_rating if min_rating is not None else 0.0
-        return await service.list_profiles(min_rating=rating)
+        return await service.list_profiles(
+            min_rating=min_rating,
+            min_price=min_price,
+            max_price=max_price,
+        )
     except Exception as exc:
         raise _map_service_exception(exc)

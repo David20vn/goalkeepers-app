@@ -1,4 +1,4 @@
-# app/services/goalkeeper_service.py
+from typing import Optional
 
 from app.repositories.goalkeeper_repository import GoalkeeperRepository
 from app.repositories.user_repository import UserRepository
@@ -98,5 +98,14 @@ class GoalkeeperService:
     async def update_rating(self, goalkeeper_id: int, new_rating: float):
         return await self.goalkeeper_repo.update_average_rating(goalkeeper_id, new_rating)
 
-    async def list_profiles(self, min_rating: float = 0.0):
-        return await self.goalkeeper_repo.list_by_min_rating(min_rating)
+    async def list_profiles(
+        self,
+        min_rating: Optional[float] = None,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+    ):
+        return await self.goalkeeper_repo.list_filtered(
+            min_rating=min_rating,
+            min_price=min_price,
+            max_price=max_price,
+        )

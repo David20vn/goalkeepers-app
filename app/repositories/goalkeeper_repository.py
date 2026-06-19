@@ -1,7 +1,7 @@
 from uuid import UUID
 from typing import Optional, List
 
-from sqlalchemy import select
+from sqlalchemy import select, and_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.goalkeeper import Goalkeeper
@@ -75,10 +75,28 @@ class GoalkeeperRepository:
         await self.session.refresh(goalkeeper)
         return goalkeeper
 
-    async def list_by_min_rating(self, min_rating: float = 0.0) -> List[Goalkeeper]:
-        result = await self.session.execute(
-            select(Goalkeeper).where(Goalkeeper.average_rating >= min_rating)
-        )
+    async def list_filtered(
+        self,
+        min_rating: Optional[float] = None,
+        min_price: Optional[float] = None,
+        max_price: Optional[float] = None,
+    ) -> List[Goalkeeper]:
+        """
+        Return goalkeepers matching any combination of rating and price filters.
+        All filters are ANDed together.
+        """
+        conditions = []
+        if min_rating is not None:
+            conditions.append(Goalkeeper.average_rating >= min_rating)
+        if min_price is not None:
+            conditions.append(Goalkeeper.fixed_price >= min_price)
+        if max_price is not None:
+            conditions.append(Goalkeeper.fixed_price <= max_price)
+
+        query = select(Goalkeeper)
+        if conditions:
+            query = query.where(and_(*conditions))
+        result = await self.session.execute(query)
         return list(result.scalars().all())
 
     async def list_all(self) -> List[Goalkeeper]:
