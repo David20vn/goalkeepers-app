@@ -1,10 +1,9 @@
 from uuid import UUID
 from typing import List, Optional
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import joinedload
 from app.models.match import Match
-from app.models.offer import Offer
-
 
 class MatchRepository:
     def __init__(self, session: AsyncSession):
@@ -25,13 +24,17 @@ class MatchRepository:
 
     async def list_by_player(self, player_id: UUID) -> List[Match]:
         result = await self.session.execute(
-            select(Match).where(Match.player_id == player_id)
+            select(Match)
+            .options(joinedload(Match.venue))
+            .where(Match.player_id == player_id)
         )
         return list(result.scalars().all())
 
     async def list_available(self) -> List[Match]:
         result = await self.session.execute(
-            select(Match).where(Match.status == "Sin arquero")
+            select(Match)
+            .options(joinedload(Match.venue))
+            .where(Match.status == "Sin arquero")
         )
         return list(result.scalars().all())
 

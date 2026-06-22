@@ -6,7 +6,7 @@ from datetime import datetime
 import uuid
 
 
-user_role_enum = ENUM("player", "goalkeeper", name="user_role", create_type=False)
+user_role_enum = ENUM("player", "goalkeeper", "admin", name="user_role", create_type=False)
 
 
 class User(Base):

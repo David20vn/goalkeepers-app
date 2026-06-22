@@ -4,12 +4,12 @@ from uuid import UUID
 from pydantic import BaseModel, EmailStr, validator
 from datetime import datetime
 from enum import Enum
-import re
 
 
 class UserRole(str, Enum):
     PLAYER = "player"
     GOALKEEPER = "goalkeeper"
+    ADMIN = "admin"
 
 
 class UserResponse(BaseModel):

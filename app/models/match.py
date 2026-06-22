@@ -14,7 +14,7 @@ class Match(Base):
     goalkeeper_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
     date = Column(Date, nullable=False)
     time = Column(Time, nullable=False)
-    location = Column(String(255), nullable=False)
+    venue_id = Column(UUID(as_uuid=True), ForeignKey("venues.id", ondelete="SET NULL"), nullable=True)
     status = Column(String(20), nullable=False, default="Sin arquero")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -29,3 +29,4 @@ class Match(Base):
     player = relationship("User", foreign_keys=[player_id], backref="matches_created")
     goalkeeper = relationship("User", foreign_keys=[goalkeeper_id], backref="matches_assigned")
     offers = relationship("Offer", back_populates="match", cascade="all, delete-orphan")
+    venue = relationship("Venue")

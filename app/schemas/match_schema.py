@@ -7,13 +7,13 @@ from typing import Optional
 class MatchCreate(BaseModel):
     date: date
     time: time
-    location: str
+    venue_id: UUID
 
 
 class MatchUpdate(BaseModel):
     date: Optional[date] = None
     time: Optional[time] = None
-    location: Optional[str] = None
+    venue_id: UUID
 
 
 class MatchRead(BaseModel):
@@ -22,7 +22,7 @@ class MatchRead(BaseModel):
     goalkeeper_id: UUID | None
     date: date
     time: time
-    location: str
+    venue_id: UUID
     status: str
     created_at: datetime
     updated_at: datetime
